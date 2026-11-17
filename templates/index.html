@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang='id'>
+<head>
+  <meta charset='UTF-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <title>User Management</title>
+  <script src='https://cdn.tailwindcss.com'></script>
+</head>
+<body class='bg-gray-50 text-gray-800'>
+  <header class='bg-blue-600 text-white text-center font-bold py-2'>User Management</header>
+  <main class='max-w-5xl mx-auto p-6'>
+    <h1 class='text-center font-bold text-lg mb-4'>User List</h1>
+    <button onclick='openModal()' class='bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-4 py-2 rounded'>ADD USER</button>
+    <table class='w-full mt-4 text-xs'>
+      <thead class='bg-gray-100 text-left'>
+        <tr>
+          <th class='p-2'>ID</th><th>NAME</th><th>EMAIL</th><th>INSTITUTION</th>
+          <th>POSITION</th><th>PHONE</th><th>IMAGE</th><th>ACTIONS</th>
+        </tr>
+      </thead>
+      <tbody id='rows'></tbody>
+    </table>
+  </main>
+
+  <div id='modal' class='hidden fixed inset-0 bg-black/40 flex items-center justify-center'>
+    <form id='form' class='bg-white p-6 rounded w-96 space-y-2 text-sm'>
+      <h2 id='title' class='font-bold'>Add User</h2>
+      <input type='hidden' name='id' id='id'>
+      <input type='hidden' name='old_image' id='old_image'>
+      <input name='name' id='name' placeholder='Name' required class='w-full border p-2 rounded'>
+      <input name='email' id='email' type='email' placeholder='Email' class='w-full border p-2 rounded'>
+      <input name='institution' id='institution' placeholder='Institution' class='w-full border p-2 rounded'>
+      <input name='position' id='position' placeholder='Position' class='w-full border p-2 rounded'>
+      <input name='phone' id='phone' placeholder='Phone' class='w-full border p-2 rounded'>
+      <input name='image_file' type='file' accept='image/*' class='w-full text-xs'>
+      <div class='flex justify-end gap-2 pt-2'>
+        <button type='button' onclick='closeModal()' class='px-3 py-1 border rounded'>Cancel</button>
+        <button class='px-3 py-1 bg-purple-600 text-white rounded'>Save</button>
+      </div>
+    </form>
+  </div>
+
+<script>
+let users = [];
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function load() {
+  const r = await fetch('/api/users');
+  const d = await r.json();
+  users = Array.isArray(d) ? d : [];
+  $('rows').innerHTML = users.map((u, i) => `
+    <tr class='border-b'>
+      <td class='p-2'>${esc(u.id)}</td><td>${esc(u.name)}</td><td>${esc(u.email)}</td>
+      <td>${esc(u.institution)}</td><td>${esc(u.position)}</td><td>${esc(u.phone)}</td>
+      <td>${u.image ? `<img src='${esc(u.image)}' class='h-10 rounded'>` : ''}</td>
+      <td>
+        <button onclick='edit(${i})' class='text-blue-600 mr-2'>Edit</button>
+        <button onclick='del(${u.id})' class='text-red-600'>Delete</button>
+      </td>
+    </tr>`).join('');
+}
+
+function openModal() {
+  $('form').reset(); $('id').value = ''; $('old_image').value = '';
+  $('title').textContent = 'Add User';
+  $('modal').classList.remove('hidden');
+}
+function closeModal() { $('modal').classList.add('hidden'); }
+
+function edit(i) {
+  const u = users[i];
+  openModal();
+  $('title').textContent = 'Edit User';
+  $('id').value = u.id; $('old_image').value = u.image || '';
+  ['name','email','institution','position','phone'].forEach(k => $(k).value = u[k] || '');
+}
+
+async function del(id) {
+  if (!confirm('Hapus user ini?')) return;
+  await fetch('/api/users/' + id, { method: 'DELETE' });
+  load();
+}
+
+$('form').onsubmit = async e => {
+  e.preventDefault();
+  const fd = new FormData($('form'));
+  const id = fd.get('id');
+  const r = await fetch(id ? '/api/users/' + id : '/api/users',
+                        { method: id ? 'PUT' : 'POST', body: fd });
+  if (!r.ok) { alert('Gagal menyimpan data'); return; }
+  closeModal(); load();
+};
+
+load();
+</script>
+</body>
+</html>

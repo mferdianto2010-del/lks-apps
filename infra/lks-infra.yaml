@@ -1,0 +1,293 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: LKS Kota Malang - VPC, SG, NAT Instance, S3, RDS, EFS
+
+Parameters:
+  YourName:
+    Type: String
+    Description: Nama kamu, huruf kecil tanpa spasi
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Default: Technobrain2025!
+
+Resources:
+  # ---------------- VPC ----------------
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 20.2.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{Key: Name, Value: lks-kota-malang}]
+
+  VPCIPv6:
+    Type: AWS::EC2::VPCCidrBlock
+    Properties:
+      VpcId: !Ref VPC
+      AmazonProvidedIpv6CidrBlock: true
+
+  IGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{Key: Name, Value: lks-igw}]
+
+  IGWAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref IGW
+
+  # ---------------- Subnet ----------------
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 20.2.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: lks-public-1a}]
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 20.2.1.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: lks-public-1b}]
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 20.2.2.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{Key: Name, Value: lks-private-1a}]
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 20.2.3.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags: [{Key: Name, Value: lks-private-1b}]
+
+  # ---------------- Route Table ----------------
+  PublicRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags: [{Key: Name, Value: lks-public-rt}]
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IGWAttach
+    Properties:
+      RouteTableId: !Ref PublicRT
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW
+  PublicRouteV6:
+    Type: AWS::EC2::Route
+    DependsOn: [IGWAttach, VPCIPv6]
+    Properties:
+      RouteTableId: !Ref PublicRT
+      DestinationIpv6CidrBlock: '::/0'
+      GatewayId: !Ref IGW
+  PubAssoc1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PublicSubnet1, RouteTableId: !Ref PublicRT}
+  PubAssoc2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PublicSubnet2, RouteTableId: !Ref PublicRT}
+
+  PrivateRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags: [{Key: Name, Value: lks-private-rt}]
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRT
+      DestinationCidrBlock: 0.0.0.0/0
+      InstanceId: !Ref NatInstance
+  PrivAssoc1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PrivateSubnet1, RouteTableId: !Ref PrivateRT}
+  PrivAssoc2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PrivateSubnet2, RouteTableId: !Ref PrivateRT}
+
+  # ---------------- NAT Instance ----------------
+  NatSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: lks-nat-sg
+      GroupDescription: NAT instance - allow traffic from VPC
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - {IpProtocol: -1, CidrIp: 20.2.0.0/16}
+      Tags: [{Key: Name, Value: lks-nat-sg}]
+
+  NatInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0015c0130d6cc5da7
+      InstanceType: t2.micro
+      SourceDestCheck: false
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          SubnetId: !Ref PublicSubnet1
+          AssociatePublicIpAddress: true
+          GroupSet: [!Ref NatSG]
+      Tags: [{Key: Name, Value: lks-nat-instance}]
+
+  # ---------------- Security Group ----------------
+  SGLB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: SG-LB
+      GroupDescription: Load Balancer HTTP and HTTPS
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0}
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0}
+      Tags: [{Key: Name, Value: SG-LB}]
+
+  SGApps:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: SG-Apps
+      GroupDescription: Application, EFS, RDS
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 5000, ToPort: 5000, CidrIp: 0.0.0.0/0}
+        - {IpProtocol: tcp, FromPort: 2049, ToPort: 2049, CidrIp: 20.2.2.0/24}
+        - {IpProtocol: tcp, FromPort: 2049, ToPort: 2049, CidrIp: 20.2.3.0/24}
+        - {IpProtocol: tcp, FromPort: 3306, ToPort: 3306, CidrIp: 20.2.2.0/24}
+        - {IpProtocol: tcp, FromPort: 3306, ToPort: 3306, CidrIp: 20.2.3.0/24}
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, SourceSecurityGroupId: !Ref SGLB}
+      Tags: [{Key: Name, Value: SG-Apps}]
+
+  # Tambahan praktis: instance Beanstalk ada di public subnet, jadi perlu
+  # boleh mount EFS ke mount target lewat SG-Apps itu sendiri (self reference).
+  SGAppsSelfEFS:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SGApps
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      SourceSecurityGroupId: !Ref SGApps
+
+  # ---------------- S3 ----------------
+  AppBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub lks-kotamalang-${YourName}-25
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      LifecycleConfiguration:
+        Rules:
+          - Id: archive-30d-delete-1y
+            Status: Enabled
+            Transitions:
+              - {StorageClass: GLACIER, TransitionInDays: 30}
+            ExpirationInDays: 365
+  AppBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AppBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicRead
+            Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub '${AppBucket.Arn}/*'
+
+  DockerBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub lks-dockerimage-${YourName}-25
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+  DockerBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DockerBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicRead
+            Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub '${DockerBucket.Arn}/*'
+
+  # ---------------- RDS ----------------
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private subnets for LKS RDS
+      SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+
+  RDS:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: LKS-RDS-Apps
+      Engine: mariadb
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: '20'
+      StorageType: gp2
+      MasterUsername: admin
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups: [!Ref SGApps]
+      PubliclyAccessible: false
+      MultiAZ: false
+      BackupRetentionPeriod: 0
+
+  # ---------------- EFS ----------------
+  EFS:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: elastic
+      BackupPolicy: {Status: ENABLED}
+      LifecyclePolicies:
+        - TransitionToIA: AFTER_30_DAYS
+        - TransitionToArchive: AFTER_90_DAYS
+        - TransitionToPrimaryStorageClass: AFTER_1_ACCESS
+      FileSystemTags: [{Key: Name, Value: lksappsefs}]
+  EFSMount1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFS
+      SubnetId: !Ref PrivateSubnet1
+      SecurityGroups: [!Ref SGApps]
+  EFSMount2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFS
+      SubnetId: !Ref PrivateSubnet2
+      SecurityGroups: [!Ref SGApps]
+
+Outputs:
+  VPCId: {Value: !Ref VPC}
+  PublicSubnet1: {Value: !Ref PublicSubnet1}
+  PublicSubnet2: {Value: !Ref PublicSubnet2}
+  PrivateSubnet1: {Value: !Ref PrivateSubnet1}
+  PrivateSubnet2: {Value: !Ref PrivateSubnet2}
+  SGAppsId: {Value: !Ref SGApps}
+  SGLBId: {Value: !Ref SGLB}
+  RDSEndpoint: {Value: !GetAtt RDS.Endpoint.Address}
+  EFSId: {Value: !Ref EFS}
+  AppBucketName: {Value: !Ref AppBucket}
+  DockerBucketName: {Value: !Ref DockerBucket}
